@@ -2,7 +2,7 @@
 % Please edit documentation in R/example_data.R
 \name{use_example_data}
 \alias{use_example_data}
-\title{Copy the bundled example data to a destination directory}
+\title{Copy the bundled synthetic example files to a destination directory}
 \usage{
 use_example_data(dest_dir = tempfile("ensemble_example_"))
 }
@@ -15,7 +15,10 @@ Character vector with the copied file paths (invisibly).
 }
 \description{
 This helper copies the synthetic example files (counts, metadata,
-helper tables, and background form) into a writable directory so that users
-can run the preprocessing and agent workflows without touching the original
-files inside the installed package.
+helper tables, and background form; all prefixed \code{example_}) into a
+writable directory so that users can run the preprocessing and agent
+workflows without touching the original files inside the installed
+package. The user-supplied GeneHancer bed (a licensed reference,
+not bundled) is intentionally NOT copied even if it has been placed
+alongside the example files.
 }

@@ -39,6 +39,13 @@ against enhancer sets. The GeneHancer BED is assumed to be BED0 (0-based start,
 end-exclusive) and is converted internally to 1-based coordinates for
 `GenomicRanges`.
 
+> **Prerequisite:** the real GeneHancer BED (`GeneHancer_v5.24.bed`) is
+> licensed and is **not** bundled with this repository. Obtain it from
+> GeneCards (see the *GeneHancer* note under [Installation](#installation)
+> above) and place it at `inst/extdata/GeneHancer_v5.24.bed`, then run
+> `Rscript inst/scripts/setup_genehancer.R` to verify before invoking the
+> example below.
+
 Example: map rsIDs to GHIDs from the bundled demo inputs.
 
 ```r
@@ -47,7 +54,7 @@ snps_in <- readLines("inst/extdata/example_eORA_SNPs.txt")
 enhancer_sets <- read_concepts("normal_CellType2Enhancer_v2.gmt")
 res <- run_eORA(
     snps = snps_in,
-    gh_bed = "inst/extdata/GeneHancer_v5.24.bed",
+    gh_bed = "inst/extdata/GeneHancer_v5.24.bed",   # user-supplied; see Installation
     enhancer_sets = enhancer_sets,
     ghid_col = 4,
     B = 10000,

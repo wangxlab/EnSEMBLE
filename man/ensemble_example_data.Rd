@@ -7,11 +7,12 @@
 ensemble_example_data()
 }
 \value{
-Absolute path to the example data directory.
+Absolute path to the directory holding the example files.
 }
 \description{
-Returns the absolute path to the packaged synthetic example data. Use
-this helper when programmatically constructing file paths for the example
-workflow or copying the assets to a writable directory prior to running a
-local analysis.
+Returns the absolute path to the directory containing the packaged
+synthetic example files (all prefixed \code{example_}). Use this helper when
+programmatically constructing file paths for the example workflow or
+copying the assets to a writable directory prior to running a local
+analysis.
 }
