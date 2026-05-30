@@ -4,14 +4,14 @@ ENSEMBLE provides enhancer-centric differential analysis and enrichment workflow
 
 ## Enhancer Set Enrichment Analysis (ESEA)
 
-- To reproduce the bundled workflow, run `Rscript run_k562_example.R [optional_output_dir]`. When no directory is supplied, results are written to `outputs/k562_example` under the current working directory.
+- To reproduce the bundled workflow, run `Rscript run_example.R [optional_output_dir]`. When no directory is supplied, results are written to `outputs/example_run` under the current working directory.
 - The script automates loading the package, filters enhancer sets via `retain_specific_enhancers()`, and saves the aligned metadata plus ESEA and GSEA tables inside the output directory.
-- Ensure the file paths defined near the top of `run_k562_example.R` point to your local copies of the K562 count matrices, metadata, and MSigDB collections before launching the script.
+- Ensure the file paths defined near the top of `run_example.R` point to your local copies of the bundled synthetic count matrices, metadata, and MSigDB collections before launching the script.
 
-### Synthetic TNBC demo
+### Synthetic example data
 
-A lightweight SNAI1 knockout TNBC dataset now ships with the package under
-`inst/extdata/example_data`. Use `ensemble_example_data()` to locate the files
+A lightweight synthetic dataset ships with the package under
+`inst/extdata`. Use `ensemble_example_data()` to locate the files
 inside an installed copy of ENSEMBLE or call `use_example_data()` to copy the
 assets to a writable directory:
 
@@ -21,11 +21,16 @@ list.files(dest)
 #> example_background.txt, example_metadata.csv, example_enhancer_counts.tsv, ...
 ```
 
-The folder contains enhancer and gene count matrices, metadata, helper/ESEA/GSEA
-tables, minimalist GeneHancer and GTF annotations, enhancer-set GMTs, and a
-filled background form. Point the file paths in `run_k562_example.R` (or your
-own workflow) to these files to execute the entire pipeline end-to-end without
-downloading external resources.
+The folder contains synthetic enhancer and gene count matrices, metadata,
+helper/ESEA/GSEA tables, a synthetic GeneHancer-format annotations example,
+GTF annotations, enhancer-set GMTs, and a filled background form. Point the
+file paths in `run_example.R` (or your own workflow) to these files to
+execute the entire pipeline end-to-end without downloading external resources.
+
+> Note: `inst/extdata/example_genehancer_annotations.tsv` is a **synthetic
+> format example** (e.g. IDs `GH001_EMT`, toy coordinates `chr1:1000-1500`)
+> and is **not** a subset of real GeneHancer data. For real analyses, see
+> the GeneHancer installation note below.
 
 ## Enhancer Overlap Enrichment Analysis (eORA)
 
@@ -83,9 +88,24 @@ library(ENSEMBLE)
 ensemble_example_data()
 ```
 
+### GeneHancer (required for enhancer-to-gene mapping)
+
+EnSEMBLE uses **GeneHancer v5.24**, which is distributed under license by
+GeneCards / LifeMap Sciences and **cannot be redistributed**. It is therefore
+**not** bundled with this repository. Obtain GeneHancer v5.24 directly from
+GeneCards (https://www.genecards.org/, GeneHancer licensing), place the bed
+file at `inst/extdata/GeneHancer_v5.24.bed`, and run
+`Rscript inst/scripts/setup_genehancer.R` to verify.
+
+Expected format: tab-separated, no header, columns `chr`, `start`, `end`,
+`GHid` (e.g. `chr20  237139  238398  GH20J000237`).
+
+Please cite Fishilevich et al. (2017), *Database*,
+doi:[10.1093/database/bax028](https://doi.org/10.1093/database/bax028).
+
 ### Swapping in your own datasets
 
-`run_k562_example.R` now reads the bundled example paths by default and lets you
+`run_example.R` now reads the bundled example paths by default and lets you
 override any input via `example_config.json` in your working directory. Update
 the JSON with lab-specific files (enhancer/gene counts, metadata, annotations,
 MSigDB GMTs, and contrast definition) and rerun the script:
@@ -103,124 +123,214 @@ MSigDB GMTs, and contrast definition) and rerun the script:
 }
 ```
 
-Leave keys untouched to keep using the packaged TNBC demo.
+Leave keys untouched to keep using the packaged synthetic example data.
 
-# Gemini ESEA↔GSEA Agent Guide
+---
 
-This guide walks through using the Gemini-backed agent end-to-end: creating an isolated environment, configuring API credentials, and running the workflow on your enhancer and pathway tables.
+# Python Evidence-Classifier Agent (`local_agent/`)
+
+`local_agent/` is a Python module that consumes the R-side outputs
+(GSEA results, ESEA helpers, background context) and produces structured
+verdicts (SUPPORTED / PARTIAL / GENE_LEVEL_ONLY) plus a 2–3 page PDF
+report per dataset. v2.0 uses **Anthropic Claude (Sonnet/Opus 4.5)** as
+the backing LLM.
+
+If you were using the v1.x Gemini-backed agent, see [MIGRATION.md](MIGRATION.md)
+for the flag-mapping table. The v1.x CLI invocation continues to work via
+the back-compat shim, but Google Gemini is no longer supported.
 
 ## 1. Prerequisites
-- Python 3.9 or newer (3.10 recommended)
-- `conda` (optional but recommended for isolation)
-- Access to the [Google AI Studio](https://ai.google.dev/) Gemini API
-- Input files: a GSEA CSV, an ESEA CSV, and a completed background form from this repository
 
-## 2. Create a Dedicated Environment
-Use the provided Conda environment or create your own:
+- Python 3.10 or newer
+- An Anthropic API key (https://console.anthropic.com)
+- WeasyPrint system libraries: `libpango-1.0-0`, `libcairo2`,
+  `libgdk-pixbuf-2.0-0`, `libffi-dev` (Debian/Ubuntu) or
+  `brew install pango cairo gdk-pixbuf` (macOS)
+- R-side outputs already in place: `GSEA_results.csv`, `ESEA_helpers.csv`,
+  and a filled `background.txt` (use `background_form_template.txt` as a
+  scaffold)
+
+## 2. Install Python dependencies
 
 ```bash
-# Create a fresh environment
 conda create -n ensemble python=3.10
 conda activate ensemble
-```
-
-Install the Python requirements (WeasyPrint needs system libraries such as
-`libpango-1.0-0`, `libcairo2`, `libgdk-pixbuf-2.0-0`, and `libffi-dev` on
-Debian/Ubuntu):
-
-```bash
 pip install -r requirements.txt
 ```
 
-> On macOS, install `pango`, `cairo`, and `gdk-pixbuf` via Homebrew
-> (`brew install pango cairo gdk-pixbuf`) before running `pip install`.
+`requirements.txt` pins: `anthropic`, `pydantic`, `pandas`, `matplotlib`,
+`networkx`, `scipy`, `scikit-learn`, `dynamicTreeCut`, `Markdown`,
+`WeasyPrint`.
 
-The `requirements.txt` file pins `google-generativeai` to the 0.5–0.6 range
-tested with this agent; upgrade only after verifying the pipeline locally.
+## 3. Configure the API key
 
-## 3. Configure Your Gemini API Key
-1. Generate an API key from Google AI Studio and store it in a safe place **outside version control**. For example:
-   ```bash
-   echo "YOUR_KEY_HERE" > gemini_api_key.txt
-   chmod 600 gemini_api_key.txt
-   ```
-2. You can provide the key in one of two ways when running the agent:
-   - Export the environment variable once per shell session:
-     ```bash
-     export GOOGLE_API_KEY=$(cat gemini_api_key.txt)
-     ```
-   - Or pass it via the CLI flag:
-     ```bash
-     --gemini-api-key $(cat gemini_api_key.txt)
-     ```
+```bash
+export ANTHROPIC_API_KEY=sk-ant-...     # in current shell
+# or save to a sourceable file:
+echo 'export ANTHROPIC_API_KEY=sk-ant-...' > ~/.anthropic_env
+chmod 600 ~/.anthropic_env
+source ~/.anthropic_env
+```
 
-## 4. Run the Agent
-The CLI only needs paths to your data plus the Gemini options; the Gemini backend is now the sole engine. Example using the shared `singlecell` environment and an inline key flag:
+The CLI never accepts the key as a flag (keys on the command line leak
+into `ps` output and shell history).
+
+## 4. Run the agent
+
+There are two equivalent invocation styles. **Either works** — pick
+whichever fits your existing workflow.
+
+### 4.1 File-path style (v1.x-compatible)
+
+Useful when files live in arbitrary locations on disk:
 
 ```bash
 python -m local_agent.cli \
   --gsea-csv GSEA_results.csv \
-  --esea-csv ESEA_results.csv \
-  --background-txt background_k562_example.txt \
-  --output-dir outputs/gemini_run \
-  --gemini-api-key $(cat gemini_api_key.txt)
+  --esea-csv ESEA_helpers.csv \
+  --background-txt background.txt \
+  --output-dir outputs/my_run
 ```
 
-Note: keep a trailing `\` on every intermediate line (or put the command on a single line). If a backslash is missing the shell treats the next `--flag` as a new command and prints `command not found`. Leading-edge genes for each top pathway are retained (trimmed to the most informative 10 genes), so the agent weighs those driver genes during drafting and verification. Enhancer tables drop their massive leading-edge lists to keep room for ~10 cell types per direction. Ensure your background file includes a `Contrast:` line describing numerator vs reference so NES/effect signs are interpreted correctly. When you add `--gsea-only`, the run completes without enhancer evidence and the outputs highlight that follow-up step.
+### 4.2 Dataset style (v2.0 canonical)
 
-## 4.1 CLI Parameters
-- `--gsea-csv PATH` (required): Absolute or relative path to the Gene Set Enrichment results CSV. The pipeline keeps only rows that pass `--gsea-q-threshold` and `--gsea-top-n`.
-- `--esea-csv PATH` (optional): Path to the enhancer screen CSV. Provide it for enhancer-aware verification; omit when running in GSEA-only mode.
-- `--background-txt PATH` (required): Plain-text form describing the study context. Use `background_form_template.txt` as the scaffold.
-- `--output-dir PATH` (default `outputs/gemini_agent`): Directory where artefacts such as `mini_thesis.txt` and `verification_table.txt` are written.
-- `--gemini-model NAME` (default `models/gemini-2.5-flash`): Gemini model identifier. Lower-capacity models (e.g., `models/gemini-1.5-flash`) consume fewer tokens if you are rate-limited.
-- `--gemini-api-key KEY` (optional): Inline Gemini API key. Skip when `GOOGLE_API_KEY` is already exported in the shell.
-- `--gsea-only` (flag): Skip enhancer (ESEA) inputs and treat all findings as pathway-driven hypotheses.
-- `--gemini-temperature FLOAT` (default `0.3`): Sampling temperature. Lower values make the prose more deterministic; higher values add diversity.
-- `--gemini-top-p FLOAT` (default `0.95`): Nucleus sampling cutoff. Reduce to tighten the probability mass considered at each token.
-- `--gemini-top-k INT` (default `32`): Limits how many candidates are inspected during sampling. Smaller numbers reduce randomness slightly.
-- `--gemini-max-output-tokens INT` (default `8192`): Hard ceiling on the response length. Increase if long summaries are truncated, at the cost of more quota usage.
-- `--gsea-top-n INT` (default `50`): Maximum pathway records per direction (up/down) forwarded to Gemini after filtering.
-- `--gsea-q-threshold FLOAT` (default `0.05`): Q-value cutoff for GSEA pathways. Lower this to send only the most confident pathways.
-- `--theme-cap INT` (default `3`): Cap on the number of themed pathway groups per direction that are described to Gemini.
-- `--esea-max-per-direction INT` (default `10`): Maximum enhancer cell types per direction forwarded to Gemini; guarantees at least one UP and one DOWN candidate when available.
-- `--esea-q-threshold FLOAT` (default `0.05`): Q-value cutoff for enhancer hits to count as “Supported”.
-- `--esea-effect-threshold FLOAT` (default `0.30`): Minimum absolute effect size to count as “Supported”.
-- `--esea-partial-q-threshold FLOAT` (default `0.10`): Q-value limit for classifying a hit as “Partial”.
-- `--esea-partial-effect-threshold FLOAT` (default `0.20`): Effect-size threshold for the “Partial” decision.
+Easier when you organise inputs by dataset name. Expects:
 
-## 4.2 Generation Tuning Tips
-- The default model (`models/gemini-2.5-flash`) balances quality and latency but you can swap to lighter flashes if quotas remain tight. Swap `--gemini-model` for another identifier returned by `genai.list_models()` if desired.
-- Tune generation behaviour with `--gemini-temperature`, `--gemini-top-p`, `--gemini-top-k`, and `--gemini-max-output-tokens` (defaults to 0.3 / 0.95 / 32 / 8192 respectively).
-- Control deterministic filtering with the new flags:
-  - `--gsea-top-n` (default 50) and `--gsea-q-threshold` (default 0.05) limit which pathway themes are shown to Gemini.
-  - `--theme-cap` (default 3) caps the number of theme groups per direction.
-  - `--esea-max-per-direction` (default 10) keeps roughly ten enhancer states per sign while still allowing balanced coverage.
-  - `--esea-q-threshold` (default 0.05) and `--esea-effect-threshold` (default 0.30) gate supported enhancer hits.
-  - `--esea-partial-q-threshold` (default 0.10) and `--esea-partial-effect-threshold` (default 0.20) adjust when a claim is downgraded to “Partial”.
+```
+inputs/<dataset>/GSEA_results.csv
+inputs/<dataset>/ESEA_helpers.csv
+inputs/<dataset>/backgrounds.txt
+```
 
-## 4.3 Background Contrast Checklist
-- Always fill the `Contrast:` field in `background_form_template.txt` (e.g., `Treatment vs Control`).
-- Spell out which cohort is the numerator so the agent maps positive/negative NES correctly.
-- If directionality is unclear, the run aborts with a clarification request.
+Then:
 
-## 4.4 GSEA-only Quick Start
 ```bash
-python -m local_agent.cli \n  --gsea-csv GSEA_results.csv \n  --background-txt background_k562_example.txt \n  --output-dir outputs/gsea_only_demo \n  --gemini-api-key $(cat gemini_api_key.txt) \n  --gsea-only
+python -m local_agent.cli --dataset bt20
+python -m local_agent.cli --dataset all   # runs bt20, ipsc, panc1, snai1
 ```
-Outputs are marked as hypotheses and include a reminder to run ESEA when enhancer data becomes available.
 
-## 5. Outputs
-Successful runs create the following under `--output-dir`:
-- `draft_connections.json` – Gemini-generated theme↔cell-type hypotheses
-- `claims.json` – atomic claims derived from the draft connections
-- `verification.json` and `verification_table.txt` – numeric verification outcomes (marked as “Hypothesis” when `--gsea-only` is used)
-- `revised_connections.json` – supported/partial connections after filtering
-- `mini_thesis.txt` – final narrative plus an evidence box and, when enhancer data is missing, a reminder to run ESEA
+### 4.3 Model choice
 
-## 6. Troubleshooting
-- **API key errors**: ensure `GOOGLE_API_KEY` is exported or `--gemini-api-key` is provided. The CLI surfaces a clear message if the key is missing.
-- **Empty responses or MAX_TOKENS**: increase `--gemini-max-output-tokens` (e.g., 8192) or reduce input size.
-- **Credential hygiene**: never commit `gemini_api_key.txt`; add it to your personal `.gitignore` if necessary.
+```bash
+python -m local_agent.cli --dataset bt20 --model claude-sonnet-4-5    # default, cheaper
+python -m local_agent.cli --dataset bt20 --model claude-opus-4-5      # for graded PARTIAL outputs
+```
 
-With the environment, key, and data in place, rerun the CLI whenever you have new perturbation results—no local model downloads required.
+Opus is recommended for production reports — Sonnet sometimes collapses
+to binary SUPPORTED vs GENE_LEVEL_ONLY and skips the PARTIAL tier.
+
+### 4.4 Tuning knobs
+
+The agent runs deterministically (temperature=0) by default. Useful flags:
+
+| Flag | Default | Effect |
+|---|---|---|
+| `--temperature FLOAT` | 0.0 | Increase for prose variety; keep 0 for reproducibility |
+| `--max-tokens INT` | 8192 | Larger output budget if iPSC-scale datasets hit a cap |
+| `--q-threshold FLOAT` | 0.05 | GSEA pathway q-value cutoff before clustering |
+| `--merge-jaccard FLOAT` | 0.5 | Post-clustering merger threshold on full leading-edge Jaccard; 0 disables |
+| `--theme-cap-total INT` | 40 | Maximum themes per dataset sent to the LLM |
+| `--no-api` | off | Skip the API call; emit all-GLO fallback (smoke test) |
+
+See `python -m local_agent.cli --help` for the full list. v1.x flags are
+accepted with a deprecation notice — run
+`python -m local_agent.cli --migration-guide` for the mapping table.
+
+### 4.5 Background contrast checklist (unchanged from v1.x)
+
+- Fill the `Contrast:` field in `background_form_template.txt`
+  (e.g. `Treatment vs Control`).
+- State which cohort is the numerator so positive/negative NES is
+  interpreted correctly.
+
+## 5. Mini-thesis (narrative report)
+
+After classification succeeds, generate a 400–600 word structured
+mini-thesis:
+
+```bash
+python -m local_agent.report.build_thesis --dataset bt20
+```
+
+This calls Claude Sonnet (cheap; `~$0.05`) and writes:
+
+- `outputs/<dataset>/mini_thesis.md` — structured 4-section markdown
+- `outputs/<dataset>/thesis_validation.json` — length + section + hallucination warnings
+
+## 6. PDF report (figures + verdicts + thesis)
+
+```bash
+python -m local_agent.report.build_report --dataset bt20
+```
+
+Writes `outputs/<dataset>/report_<dataset>.pdf` containing:
+
+1. Compression figure (significant pathways → themes → verdicts)
+2. Bipartite evidence network (SUPPORTED/PARTIAL above, GLO context below)
+3. ESEA helper overview (linked vs unlinked)
+4. Mini-thesis prose
+5. Full verdict appendix table
+
+## 7. Reproducibility (optional)
+
+For a published claim table, run the dataset 3× and consolidate:
+
+```bash
+python -m local_agent.reproducibility --runs 3 --model claude-opus-4-5
+python -m local_agent.consensus --output outputs/v2_2_lock
+python -m local_agent.report.build_thesis --dataset all --output-dir outputs/v2_2_lock
+python -m local_agent.report.build_report --dataset all
+```
+
+Consensus rules: 3/3 unanimous → ship; 2/3 majority on verdict + union/intersection on helpers (helpers in ≥2 runs survive); 3-way split → GENE_LEVEL_ONLY (conservative). See `outputs/v2_2_lock/lockfile.md` and `outputs/v2_2_lock/consensus_report.md` after running.
+
+## 8. Outputs
+
+Per dataset, you'll find:
+
+```
+outputs/<dataset>/
+├── agent_input.json           # what was sent to Claude
+├── verdicts.json              # final verdicts (with theme_weight + linked_helpers list)
+├── validation.json            # deterministic validator outcome
+├── api_log.json               # full request/response
+├── clustering/
+│   ├── cluster_themes_{up,down}.json
+│   ├── merge_log.{json,md}
+│   ├── cluster_themes_{up,down}_network.{pdf,png}
+│   └── theme_summaries.json
+├── mini_thesis.md             # (if --report or build_thesis was run)
+├── thesis_validation.json
+├── figures/
+│   ├── fig_compression.{pdf,png}
+│   ├── fig_network.{pdf,png}
+│   └── fig_esea_overview.{pdf,png}
+├── verdict_table.md
+└── report_<dataset>.pdf       # final unified PDF deliverable
+```
+
+## 9. Troubleshooting
+
+- **`ANTHROPIC_API_KEY not set`**: export the variable in the current shell
+  before running.
+- **`max_tokens` truncated output**: bump `--max-tokens 12288` (Claude 4.5
+  supports up to 64k).
+- **API credit / org disabled**: rotate the key at console.anthropic.com.
+  Do **not** paste keys in chat transcripts — Anthropic auto-revokes leaked
+  keys.
+- **All-GENE_LEVEL_ONLY output**: check `validation.json`. If `used_fallback`
+  is true, the LLM output violated a validation rule (capacity, direction,
+  rationale length, etc.) and the runner emitted the conservative fallback.
+- **Different dataset names than `bt20/ipsc/panc1/snai1`**: any dataset name
+  works as long as `inputs/<name>/` has the three required files. The
+  default datasets are just for `--dataset all` convenience.
+
+## 10. Python tests
+
+```bash
+pytest local_agent/tests/                  # 39 tests: validator, merger, weight, thesis validator
+# or individually:
+python local_agent/tests/test_validator.py
+```
+
+These are deterministic — no API calls required.

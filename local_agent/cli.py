@@ -1,317 +1,299 @@
-"""Command-line interface for the Gemini-backed agent."""
+"""Backward-compatible CLI shim.
 
+Accepts both v1.x (Gemini-era) flag spelling and the v2.0 canonical flags.
+v1.x flags whose meaning has changed are honored with a deprecation warning
+and mapped to the new pipeline; flags that no longer apply are ignored with
+a single notice.
+
+Examples
+--------
+
+    # v1.x-style (old workflow continues to work):
+    python -m local_agent.cli \\
+        --gsea-csv GSEA_results.csv \\
+        --esea-csv ESEA_helpers.csv \\
+        --background-txt background.txt \\
+        --output-dir outputs/run1
+
+    # v2.0 canonical:
+    python -m local_agent.cli --dataset bt20
+
+    # Anthropic model override:
+    python -m local_agent.cli --dataset bt20 --model claude-opus-4-5
+
+    # See the full migration table:
+    python -m local_agent.cli --migration-guide
+"""
 from __future__ import annotations
 
 import argparse
-import json
+import sys
+import warnings
 from pathlib import Path
+from typing import Iterable
 
-from .background import parse_background_txt
-from .config import AnalysisSettings, GeminiConfig
-from .data_models import ClaimEvidence, GSEARecord, HelperClaim, ThemeSummary
-from .llm import GeminiLLM
-from .pipeline import Pipeline, run_pipeline
-
-
-def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Run the Gemini-powered ESEA↔GSEA interpretability agent.")
-    parser.add_argument("--gsea-csv", required=True, type=Path, help="Path to the GSEA results CSV.")
-    parser.add_argument(
-        "--esea-csv",
-        type=Path,
-        default=None,
-        help="Path to the enhancer helper CSV (esea_helpers.csv). Omit for GSEA-only runs.",
-    )
-    parser.add_argument("--background-txt", required=True, type=Path, help="Path to the filled background text form.")
-    parser.add_argument(
-        "--output-dir",
-        default=Path("outputs/gemini_agent"),
-        type=Path,
-        help="Directory for generated artefacts.",
-    )
-    parser.add_argument(
-        "--gemini-model",
-        default="models/gemini-2.5-flash",
-        help="Gemini model identifier to call (see ai.google.dev for model catalogue).",
-    )
-    parser.add_argument(
-        "--gemini-api-key",
-        default=None,
-        help="Gemini API key (omit when GOOGLE_API_KEY is already exported).",
-    )
-    parser.add_argument(
-        "--critic-gemini-model",
-        default=None,
-        help="Gemini model identifier for the critic head (defaults to --gemini-model).",
-    )
-    parser.add_argument("--disable-critic", action="store_true", help="Disable the critic review stage.")
-    parser.add_argument("--gsea-only", action="store_true", help="Run without enhancer (ESEA) data; outputs will be marked as hypotheses.")
-    parser.add_argument("--gemini-temperature", default=0.3, type=float, help="Sampling temperature for Gemini.")
-    parser.add_argument("--gemini-top-p", default=0.95, type=float, help="Top-p nucleus sampling for Gemini.")
-    parser.add_argument("--gemini-top-k", default=32, type=int, help="Top-k sampling for Gemini.")
-    parser.add_argument(
-        "--gemini-max-output-tokens",
-        default=10000,
-        type=int,
-        help="Maximum number of tokens Gemini may generate per call.",
-    )
-    parser.add_argument("--gsea-top-n", default=0, type=int, help="Maximum pathways per direction to send to Gemini (0 keeps all).")
-    parser.add_argument("--gsea-q-threshold", default=0.05, type=float, help="Q-value cutoff for GSEA pathways.")
-    parser.add_argument("--esea-q-threshold", default=0.05, type=float, help="Helper q-value cutoff used for ranking.")
-    parser.add_argument(
-        "--esea-effect-threshold",
-        default=0.25,
-        type=float,
-        help="Helper NES threshold used when ranking helper confidence.",
-    )
-    parser.add_argument("--theme-cap", default=10, type=int, help="Maximum number of themed pathway groups per direction.")
-    parser.add_argument(
-        "--theme-top-pathways",
-        default=3,
-        type=int,
-        help="Representative pathways per theme to surface to Gemini.",
-    )
-    parser.add_argument(
-        "--theme-leading-edge-target",
-        default=12,
-        type=int,
-        help="Target number of leading-edge genes per theme (10–15 recommended).",
-    )
-    parser.add_argument(
-        "--theme-cap-total",
-        default=20,
-        type=int,
-        help="Maximum themes across both directions (set high to keep all helper-supported themes).",
-    )
-    parser.add_argument(
-        "--helper-claims-per-theme",
-        default=0,
-        type=int,
-        help="Maximum helper links per theme supplied to the LLM (0 disables the cap).",
-    )
-    parser.add_argument(
-        "--esea-max-per-direction",
-        default=50,
-        type=int,
-        help="Maximum helper rows per direction to send to Gemini.",
-    )
-    parser.add_argument(
-        "--resume-stage",
-        choices=["mini_thesis"],
-        help="Resume a single failed stage using cached outputs (currently supports mini_thesis).",
-    )
-    return parser
+from .caller import APICallError
+from .config import INPUTS_DIR, OUTPUTS_DIR, AgentConfig
+from .runner import DATASET_NAMES, run_dataset, run_from_files
 
 
-def main(argv: list[str] | None = None) -> None:
-    parser = build_parser()
-    args = parser.parse_args(argv)
+MIGRATION_TABLE = """\
+v1.x flag                            v2.0 mapping
+─────────────────────────────────── ──────────────────────────────────────────
+--gsea-csv PATH                     supported (file-path mode)
+--esea-csv PATH                     supported (file-path mode)
+--background-txt PATH               supported (file-path mode)
+--output-dir PATH                   supported
+--gemini-model NAME                 IGNORED — use --model claude-sonnet-4-5
+                                    or --model claude-opus-4-5
+--gemini-api-key KEY                IGNORED — export ANTHROPIC_API_KEY
+--critic-gemini-model NAME          IGNORED — no critic stage in v2.0
+--disable-critic                    IGNORED — no critic stage in v2.0
+--gemini-temperature FLOAT          mapped to --temperature (v2.0 default 0)
+--gemini-top-p / --gemini-top-k     IGNORED — Anthropic API doesn't expose top_k
+--gemini-max-output-tokens INT      mapped to --max-tokens
+--gsea-only                         REMOVED — v2.0 requires ESEA helpers
+--gsea-top-n INT                    deferred to clustering theme caps
+--gsea-q-threshold FLOAT            mapped to --q-threshold
+--esea-q-threshold,
+  --esea-effect-threshold,
+  --esea-partial-q-threshold,
+  --esea-partial-effect-threshold   IGNORED — helpers are pre-filtered upstream
+--theme-cap INT                     mapped to --theme-cap-per-direction
+--theme-top-pathways,
+  --theme-leading-edge-target       IGNORED — defaults from locked clustering
+--theme-cap-total INT               mapped to --theme-cap-total
+--helper-claims-per-theme,
+  --esea-max-per-direction          IGNORED — replaced by per-helper cap (5)
+                                    and per-theme cap (3)
+--resume-stage mini_thesis          replaced by:
+                                    python -m local_agent.report.build_thesis \\
+                                        --dataset NAME --output-dir DIR
 
-    if not args.resume_stage:
-        if args.esea_csv is None:
-            if not args.gsea_only:
-                parser.error("Missing --esea-csv. Provide the helper CSV or pass --gsea-only for pathway-only interpretation.")
-        else:
-            if args.gsea_only:
-                parser.error("--gsea-only cannot be combined with --esea-csv.")
+New v2.0 flags (no v1.x equivalent)
+─────────────────────────────────── ──────────────────────────────────────────
+--model claude-sonnet-4-5 |         Anthropic Claude model
+  claude-opus-4-5
+--merge-jaccard FLOAT               post-clustering merger threshold (0.5)
+--dataset NAME                      convention-driven (inputs/<NAME>/...)
+--inputs-dir PATH                   override default inputs/ root
+"""
 
-    gemini_config = GeminiConfig(
-        model=args.gemini_model,
-        api_key=args.gemini_api_key,
-        temperature=args.gemini_temperature,
-        top_p=args.gemini_top_p,
-        top_k=args.gemini_top_k,
-        max_output_tokens=args.gemini_max_output_tokens,
+
+def _warn(msg: str) -> None:
+    print(f"[v2.0 migration] {msg}", file=sys.stderr)
+
+
+def _build_parser() -> argparse.ArgumentParser:
+    ap = argparse.ArgumentParser(
+        description=__doc__.splitlines()[0],
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="Use --migration-guide for the full v1.x → v2.0 flag mapping.",
     )
+    ap.add_argument("--migration-guide", action="store_true",
+                    help="Print the v1.x → v2.0 flag-mapping table and exit.")
 
-    if args.resume_stage:
-        llm = GeminiLLM(gemini_config)
-        _resume_stage(args, llm)
-        return
+    # Input selectors (v1.x-style file paths OR v2.0 dataset name)
+    ap.add_argument("--dataset", help="Dataset name (or 'all' for the 4 defaults)")
+    ap.add_argument("--gsea-csv", type=Path, help="Path to GSEA results CSV (v1.x style)")
+    ap.add_argument("--esea-csv", type=Path, help="Path to ESEA helpers CSV (v1.x style)")
+    ap.add_argument("--background-txt", type=Path, help="Path to background.txt (v1.x style)")
+    ap.add_argument("--inputs-dir", type=Path, default=INPUTS_DIR)
+    ap.add_argument("--output-dir", type=Path, default=OUTPUTS_DIR)
 
-    analysis_settings = AnalysisSettings(
-        gsea_top_n=args.gsea_top_n,
-        gsea_q_threshold=args.gsea_q_threshold,
-        helper_q_threshold=args.esea_q_threshold,
-        helper_nes_threshold=args.esea_effect_threshold,
-        helper_max_per_direction=args.esea_max_per_direction,
-        helper_claims_per_theme=args.helper_claims_per_theme,
-        theme_cap=args.theme_cap,
-        theme_top_pathways=args.theme_top_pathways,
-        theme_leading_edge_target=args.theme_leading_edge_target,
+    # v2.0 canonical flags
+    defaults = AgentConfig()
+    ap.add_argument("--model", default=defaults.model,
+                    help="Anthropic Claude model (claude-sonnet-4-5 or claude-opus-4-5)")
+    ap.add_argument("--temperature", type=float, default=defaults.temperature)
+    ap.add_argument("--max-tokens", type=int, default=defaults.max_tokens)
+    ap.add_argument("--max-retries", type=int, default=defaults.max_retries)
+    ap.add_argument("--q-threshold", type=float, default=defaults.gsea_q_threshold)
+    ap.add_argument("--theme-cap-per-direction", type=int, default=defaults.theme_cap_per_direction)
+    ap.add_argument("--theme-cap-total", type=int, default=defaults.theme_cap_total)
+    ap.add_argument("--merge-jaccard", type=float, default=defaults.merge_jaccard_threshold)
+    ap.add_argument("--no-api", action="store_true")
+
+    # v1.x compatibility shims (silently mapped or warned)
+    ap.add_argument("--gemini-model", dest="_legacy_gemini_model", default=None,
+                    help=argparse.SUPPRESS)
+    ap.add_argument("--gemini-api-key", dest="_legacy_gemini_api_key", default=None,
+                    help=argparse.SUPPRESS)
+    ap.add_argument("--critic-gemini-model", dest="_legacy_critic_model", default=None,
+                    help=argparse.SUPPRESS)
+    ap.add_argument("--disable-critic", dest="_legacy_disable_critic", action="store_true",
+                    help=argparse.SUPPRESS)
+    ap.add_argument("--gemini-temperature", dest="_legacy_temperature", type=float, default=None,
+                    help=argparse.SUPPRESS)
+    ap.add_argument("--gemini-top-p", dest="_legacy_top_p", type=float, default=None,
+                    help=argparse.SUPPRESS)
+    ap.add_argument("--gemini-top-k", dest="_legacy_top_k", type=int, default=None,
+                    help=argparse.SUPPRESS)
+    ap.add_argument("--gemini-max-output-tokens", dest="_legacy_max_tokens", type=int, default=None,
+                    help=argparse.SUPPRESS)
+    ap.add_argument("--gsea-only", dest="_legacy_gsea_only", action="store_true",
+                    help=argparse.SUPPRESS)
+    ap.add_argument("--gsea-top-n", dest="_legacy_top_n", type=int, default=None,
+                    help=argparse.SUPPRESS)
+    ap.add_argument("--esea-q-threshold", dest="_legacy_esea_q", type=float, default=None,
+                    help=argparse.SUPPRESS)
+    ap.add_argument("--esea-effect-threshold", dest="_legacy_esea_effect", type=float, default=None,
+                    help=argparse.SUPPRESS)
+    ap.add_argument("--esea-partial-q-threshold", dest="_legacy_partial_q", type=float, default=None,
+                    help=argparse.SUPPRESS)
+    ap.add_argument("--esea-partial-effect-threshold", dest="_legacy_partial_effect", type=float, default=None,
+                    help=argparse.SUPPRESS)
+    ap.add_argument("--theme-cap", dest="_legacy_theme_cap", type=int, default=None,
+                    help=argparse.SUPPRESS)
+    ap.add_argument("--theme-top-pathways", dest="_legacy_theme_top", type=int, default=None,
+                    help=argparse.SUPPRESS)
+    ap.add_argument("--theme-leading-edge-target", dest="_legacy_le_target", type=int, default=None,
+                    help=argparse.SUPPRESS)
+    ap.add_argument("--helper-claims-per-theme", dest="_legacy_claims_per_theme", type=int, default=None,
+                    help=argparse.SUPPRESS)
+    ap.add_argument("--esea-max-per-direction", dest="_legacy_max_per_dir", type=int, default=None,
+                    help=argparse.SUPPRESS)
+    ap.add_argument("--resume-stage", dest="_legacy_resume_stage", default=None,
+                    help=argparse.SUPPRESS)
+
+    return ap
+
+
+def _apply_legacy_flags(args) -> AgentConfig:
+    """Map any v1.x flags the user passed into v2.0 config + emit warnings."""
+    # Model
+    if args._legacy_gemini_model:
+        _warn(
+            f"--gemini-model {args._legacy_gemini_model} is ignored; "
+            "v2.0 uses Anthropic Claude. Pass --model claude-sonnet-4-5 "
+            "or --model claude-opus-4-5."
+        )
+    if args._legacy_gemini_api_key:
+        _warn(
+            "--gemini-api-key is ignored; v2.0 requires ANTHROPIC_API_KEY "
+            "to be exported in the environment."
+        )
+    if args._legacy_critic_model or args._legacy_disable_critic:
+        _warn("--critic-gemini-model / --disable-critic are ignored "
+              "(no critic stage in v2.0).")
+    if args._legacy_top_p is not None or args._legacy_top_k is not None:
+        _warn("--gemini-top-p / --gemini-top-k are ignored "
+              "(Anthropic API does not expose top_k).")
+    if args._legacy_temperature is not None:
+        _warn(
+            f"--gemini-temperature {args._legacy_temperature} mapped to "
+            f"--temperature (v2.0 default 0; verify reproducibility intent)."
+        )
+        args.temperature = args._legacy_temperature
+    if args._legacy_max_tokens is not None:
+        _warn(f"--gemini-max-output-tokens mapped to --max-tokens "
+              f"({args._legacy_max_tokens}).")
+        args.max_tokens = args._legacy_max_tokens
+    if args._legacy_gsea_only:
+        # Hard removal per v2.0 spec.
+        raise SystemExit(
+            "[v2.0 migration] --gsea-only mode is removed in v2.0. "
+            "The agent requires ESEA helpers to classify themes."
+        )
+    if args._legacy_top_n is not None:
+        _warn(f"--gsea-top-n {args._legacy_top_n}: deferred to clustering "
+              "theme caps; pass --theme-cap-total instead.")
+    for attr, label in (
+        ("_legacy_esea_q", "--esea-q-threshold"),
+        ("_legacy_esea_effect", "--esea-effect-threshold"),
+        ("_legacy_partial_q", "--esea-partial-q-threshold"),
+        ("_legacy_partial_effect", "--esea-partial-effect-threshold"),
+        ("_legacy_claims_per_theme", "--helper-claims-per-theme"),
+        ("_legacy_max_per_dir", "--esea-max-per-direction"),
+        ("_legacy_theme_top", "--theme-top-pathways"),
+        ("_legacy_le_target", "--theme-leading-edge-target"),
+    ):
+        if getattr(args, attr) is not None:
+            _warn(f"{label} is ignored in v2.0 (helpers are pre-filtered).")
+    if args._legacy_theme_cap is not None:
+        _warn(f"--theme-cap {args._legacy_theme_cap} mapped to "
+              "--theme-cap-per-direction.")
+        args.theme_cap_per_direction = args._legacy_theme_cap
+    if args._legacy_resume_stage == "mini_thesis":
+        raise SystemExit(
+            "[v2.0 migration] --resume-stage mini_thesis is now a separate "
+            "entry point:\n  python -m local_agent.report.build_thesis "
+            "--dataset NAME --output-dir DIR"
+        )
+
+    return AgentConfig(
+        model=args.model,
+        temperature=args.temperature,
+        max_tokens=args.max_tokens,
+        max_retries=args.max_retries,
+        gsea_q_threshold=args.q_threshold,
+        theme_cap_per_direction=args.theme_cap_per_direction,
         theme_cap_total=args.theme_cap_total,
+        merge_jaccard_threshold=args.merge_jaccard,
     )
 
-    llm = GeminiLLM(gemini_config)
-    critic_llm: GeminiLLM | None = None
-    if not args.disable_critic:
-        critic_config = GeminiConfig(
-            model=args.critic_gemini_model or args.gemini_model,
-            api_key=args.gemini_api_key,
-            temperature=args.gemini_temperature,
-            top_p=args.gemini_top_p,
-            top_k=args.gemini_top_k,
-            # Allow critic head to emit the full requested budget (no 4k clamp).
-            max_output_tokens=args.gemini_max_output_tokens,
-        )
-        critic_llm = GeminiLLM(critic_config)
 
-    artefacts = run_pipeline(
-        gsea_csv=args.gsea_csv,
-        esea_csv=args.esea_csv,
-        background_txt=args.background_txt,
-        output_dir=args.output_dir,
-        llm=llm,
-        critic_llm=critic_llm,
-        analysis_settings=analysis_settings,
-        gsea_only=args.gsea_only,
-    )
+def main(argv: Iterable[str] | None = None) -> int:
+    ap = _build_parser()
+    args = ap.parse_args(list(argv) if argv is not None else None)
 
-    print(f"Mini-thesis written to {args.output_dir / 'mini_thesis.txt'}")
-    print(f"Helper claims saved to {args.output_dir / 'helper_claims.json'}")
-    print(f"Evidence box saved to {args.output_dir / 'evidence_box.csv'}")
-    print(f"Revision notes saved to {args.output_dir / 'revision_notes.json'}")
-    print(f"Total claims: {len(artefacts.helper_claims)} | Helper evidence available: {artefacts.helpers_available}")
+    if args.migration_guide:
+        print(MIGRATION_TABLE)
+        return 0
 
+    config = _apply_legacy_flags(args)
 
-def _resume_stage(args, llm: GeminiLLM) -> None:
-    if args.resume_stage == "mini_thesis":
-        _resume_mini_thesis(args.output_dir, args.background_txt, llm)
-    else:
-        raise ValueError(f"Unsupported resume stage: {args.resume_stage}")
-
-
-def _resume_mini_thesis(output_dir: Path, background_txt: Path, llm: GeminiLLM) -> None:
-    if not output_dir.exists():
-        raise FileNotFoundError(f"Output directory not found: {output_dir}")
-    background = parse_background_txt(background_txt)
-    themes = _load_themes(output_dir / "themes_condensed.json")
-    helper_claims = _load_helper_claims(output_dir / "helper_claims.json")
-    claim_evidence = _load_claim_evidence(output_dir / "claim_reviews.json", helper_claims)
-    helpers_available = _load_helpers_status(output_dir / "helpers_status.txt")
-    pipeline = Pipeline(llm=llm)
-    mini_thesis = pipeline._compose_mini_thesis(
-        themes=themes,
-        claim_evidence=claim_evidence,
-        background=background,
-        helpers_available=helpers_available,
-    )
-    (output_dir / "mini_thesis.txt").write_text(mini_thesis, encoding="utf-8")
-    _append_stage_failures(output_dir / "stage_failures.json", pipeline.stage_failures)
-    print(f"Mini-thesis regenerated at {output_dir / 'mini_thesis.txt'}")
-
-
-def _load_themes(path: Path) -> dict[str, list[ThemeSummary]]:
-    if not path.exists():
-        raise FileNotFoundError(f"Theme summary not found: {path}")
-    raw = json.loads(path.read_text(encoding="utf-8"))
-    themes: dict[str, list[ThemeSummary]] = {}
-    for direction, entries in raw.items():
-        theme_list: list[ThemeSummary] = []
-        for entry in entries:
-            top_records: list[GSEARecord] = []
-            for rec in entry.get("top_pathways", []):
-                top_records.append(
-                    GSEARecord(
-                        term=rec.get("term", ""),
-                        source=rec.get("collection"),
-                        nes=rec.get("nes", 0.0),
-                        q_value=rec.get("q_value", 1.0),
-                        size=rec.get("size", 0),
-                        direction=direction,
-                        score=rec.get("nes", 0.0),
-                        leading_edge=tuple(),
-                    )
-                )
-            theme_list.append(
-                ThemeSummary(
-                    theme_id=entry.get("theme_id", ""),
-                    label=entry.get("label", ""),
-                    direction=direction,
-                    collection=entry.get("collection"),
-                    effect=entry.get("effect", 0.0),
-                    q_value=entry.get("q_value", 1.0),
-                    top_pathways=top_records,
-                    leading_edges=tuple(entry.get("leading_edges", ())),
-                    helper_mean_effect=entry.get("helper_mean_effect"),
-                )
+    file_mode = bool(args.gsea_csv or args.esea_csv or args.background_txt)
+    if file_mode:
+        missing = [name for name, val in (
+            ("--gsea-csv", args.gsea_csv),
+            ("--esea-csv", args.esea_csv),
+            ("--background-txt", args.background_txt),
+        ) if val is None]
+        if missing:
+            ap.error(f"file-path mode requires {', '.join(missing)}")
+        if args.dataset:
+            ap.error("Pass either --dataset OR file paths, not both.")
+        try:
+            out = run_from_files(
+                gsea_csv=args.gsea_csv,
+                esea_csv=args.esea_csv,
+                background_txt=args.background_txt,
+                config=config,
+                output_dir=args.output_dir,
+                use_api=not args.no_api,
             )
-        themes[direction] = theme_list
-    return themes
+        except APICallError as e:
+            print(f"API error: {e}", file=sys.stderr)
+            return 1
+        counts = {"SUPPORTED": 0, "PARTIAL": 0, "GENE_LEVEL_ONLY": 0}
+        for v in out.verdicts:
+            counts[v.verdict] += 1
+        print(f"themes: {len(out.verdicts)}  counts: {counts}")
+        return 0
 
+    if not args.dataset:
+        ap.error("Pass --dataset NAME or v1.x file paths.")
 
-def _load_helper_claims(path: Path) -> list[HelperClaim]:
-    if not path.exists():
-        raise FileNotFoundError(f"Helper claims not found: {path}")
-    raw = json.loads(path.read_text(encoding="utf-8"))
-    claims: list[HelperClaim] = []
-    for entry in raw:
-        claims.append(
-            HelperClaim(
-                theme_id=entry.get("theme_id", ""),
-                theme_label=entry.get("theme_label", ""),
-                helper_name=entry.get("helper_name"),
-                helper_class=entry.get("helper_class", "theme_only"),
-                direction=entry.get("direction", "").upper() or "UP",
-                function_phrases=tuple(entry.get("function_phrases") or ()),
-                rationale=entry.get("rationale", ""),
-                confidence=entry.get("confidence", "medium"),
-                helper_top_hallmark=entry.get("helper_top_hallmark"),
-                helper_effect=entry.get("helper_effect"),
-                helper_q_value=entry.get("helper_q_value"),
-                claim_id=entry.get("claim_id"),
+    targets = DATASET_NAMES if args.dataset == "all" else (args.dataset,)
+    for d in targets:
+        print(f"\n=== Dataset: {d} ===")
+        try:
+            out = run_dataset(
+                d, config,
+                inputs_dir=args.inputs_dir,
+                outputs_dir=args.output_dir,
+                use_api=not args.no_api,
             )
-        )
-    return claims
-
-
-def _load_claim_evidence(path: Path, helper_claims: list[HelperClaim]) -> list[ClaimEvidence]:
-    if not path.exists():
-        raise FileNotFoundError(f"Claim reviews not found: {path}")
-    claim_lookup = {(claim.theme_id, claim.helper_name): claim for claim in helper_claims}
-    raw = json.loads(path.read_text(encoding="utf-8"))
-    results: list[ClaimEvidence] = []
-    for entry in raw:
-        key = (entry.get("theme_id"), entry.get("helper_name"))
-        claim = claim_lookup.get(key)
-        if claim is None:
-            continue
-        predictions_raw = entry.get("predictions") or []
-        if isinstance(predictions_raw, str):
-            predictions = (predictions_raw.strip(),)
-        else:
-            predictions = tuple(str(item).strip() for item in predictions_raw if str(item).strip())
-        evidence_snippets = entry.get("evidence_snippets") or []
-        results.append(
-            ClaimEvidence(
-                claim=claim,
-                evidence_snippets=tuple(evidence_snippets),
-                alternative=entry.get("alternative", ""),
-                gaps=entry.get("gaps", ""),
-                predictions=predictions,
-                verdict=entry.get("verdict", "Hypothesis"),
-                verdict_reason=entry.get("verdict_reason", ""),
-            )
-        )
-    return results
-
-
-def _load_helpers_status(path: Path) -> bool:
-    if not path.exists():
-        return False
-    text = path.read_text(encoding="utf-8").lower()
-    return "available" in text
-
-
-def _append_stage_failures(path: Path, new_entries: list[dict]) -> None:
-    if not new_entries:
-        return
-    existing: list[dict] = []
-    if path.exists():
-        existing = json.loads(path.read_text(encoding="utf-8"))
-    existing.extend(new_entries)
-    path.write_text(json.dumps(existing, indent=2), encoding="utf-8")
+        except APICallError as e:
+            print(f"  API error: {e}", file=sys.stderr)
+            return 1
+        counts = {"SUPPORTED": 0, "PARTIAL": 0, "GENE_LEVEL_ONLY": 0}
+        for v in out.verdicts:
+            counts[v.verdict] += 1
+        print(f"  themes: {len(out.verdicts)}  counts: {counts}")
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

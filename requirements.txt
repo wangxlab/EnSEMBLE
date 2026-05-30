@@ -1,8 +1,25 @@
-google-generativeai>=0.5.0,<0.7
-PyYAML>=6.0
-matplotlib>=3.7
-seaborn>=0.12
+# EnSEMBLE Python agent (v2.2). The R side is installed via the R package
+# itself (DESCRIPTION lists CRAN/Bioc deps). These pip-installable libraries
+# back the LLM agent under local_agent/.
+
+# LLM client
+anthropic>=0.20,<1.0
+
+# Schema validation
+pydantic>=2.0,<3.0
+
+# Data wrangling
 pandas>=2.0
+
+# Clustering (theme generation)
+scipy>=1.10
+scikit-learn>=1.3
+dynamicTreeCut
+
+# Figures + network plotting
+matplotlib>=3.7
+networkx>=3.0
+
+# Report rendering (markdown -> HTML -> PDF)
 Markdown>=3.5
 WeasyPrint>=61.0
-Pygments>=2.16

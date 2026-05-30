@@ -114,54 +114,81 @@ ENSEMBLE.heatmap <- function(enhancer.matrix,scale="row",cluster_rows=T,cluster_
 
 #' Differential Enhancer Expression (DEE) Analysis using DESeq2
 #'
-#' Performs differential enhancer expression (DEE) analysis for eRNA using the DESeq2 package.
-#' Raw counts, sample metadata, and a contrast vector are required. The contrast vector must be a character vector
-#' with exactly three elements: the name of a factor in the design formula, the numerator level (for the fold change),
-#' and the denominator level. For example, \code{contrast = c("group", "case", "control")}.
-#'
 #' @param eRNA.counts A numeric matrix of eRNA counts. Row names should represent enhancer identifiers (GHid)
 #'   and column names should represent sample names.
-#' @param meta_data A data frame containing metadata for each sample. Row names of \code{meta_data} must match the column
-#'   names of \code{eRNA.counts}.
-#' @param contrast A character vector with three elements specifying the contrast for the DESeq2 analysis.
-#' @param round.counts Logical. If \code{TRUE} (default), the raw counts are rounded to the nearest integer.
+#' @param meta_data A data frame containing metadata for each sample. Row names of \code{meta_data} must match
+#'   the column names of \code{eRNA.counts}.
+#' @param contrast A character vector with three elements specifying the contrast for DESeq2 results extraction:
+#'   the factor name, numerator level, and denominator level. e.g. \code{c("condition", "Neuron", "iPSC")}.
+#' @param design An optional one-sided formula specifying the DESeq2 design. If \code{NULL} (default), the design
+#'   is automatically set to \code{~ contrast[1]}, preserving original behaviour. To add blocking factors,
+#'   pass e.g. \code{~ cell_donor + condition}.
+#' @param round.counts Logical. If \code{TRUE} (default), raw counts are rounded to the nearest integer.
 #' @param min.countsum Numeric. Minimum total counts required for an enhancer to be retained (default is 10).
 #'
-#' @return A data frame containing the differential expression results, sorted by adjusted p-value (\code{padj}),
-#'   with a column \code{GHid} for enhancer identifiers.
-#'
-#' @details
-#' This function first subsets the eRNA counts matrix to include only the samples present in the metadata.
-#' If \code{round.counts} is \code{TRUE}, counts are rounded. A DESeq2 dataset is then created using the design formula
-#' \code{~ group}. Enhancers with very low counts (row sums less than \code{min.countsum}) are filtered out before running
-#' the DESeq2 pipeline. Finally, the DESeq2 results for the specified contrast are extracted, converted to a data frame,
-#' and sorted by adjusted p-values.
+#' @return A data frame of DESeq2 results sorted by adjusted p-value, with a \code{GHid} column.
 #'
 #' @importFrom DESeq2 DESeqDataSetFromMatrix counts DESeq results
 #' @export
-ENSEMBLE.DEE <- function(eRNA.counts, meta_data, contrast, round.counts = TRUE, min.countsum = 10) {
-  # Subset the counts matrix to include only the samples in meta_data
-  eRNA.counts <- eRNA.counts[, rownames(meta_data)]
-  meta_data <- meta_data[,contrast[1],drop=FALSE]
-  design_formula <- as.formula(paste("~", contrast[1]))
-  # Optionally round the counts to integers
-  if (round.counts == TRUE) {
+ENSEMBLE.DEE <- function(eRNA.counts, meta_data, contrast,
+                         design = NULL,
+                         round.counts = TRUE, min.countsum = 10) {
+  
+  # Subset counts to samples present in meta_data
+  eRNA.counts <- eRNA.counts[, rownames(meta_data), drop = FALSE]
+  
+  # Resolve design formula
+  if (is.null(design)) {
+    # Original behaviour: simple one-variable design from contrast[1]
+    design_formula <- as.formula(paste("~", contrast[1]))
+    # Keep only the contrast column in meta_data (original behaviour)
+    meta_data <- meta_data[, contrast[1], drop = FALSE]
+  } else {
+    # Custom design: accept either a formula object or a string
+    if (is.character(design)) {
+      design_formula <- as.formula(design)
+    } else {
+      design_formula <- design
+    }
+    # Keep all columns — the caller is responsible for providing the right ones
+    # but at minimum the contrast variable must be present
+    if (!contrast[1] %in% colnames(meta_data)) {
+      stop(paste0("contrast variable '", contrast[1],
+                  "' not found in meta_data columns: ",
+                  paste(colnames(meta_data), collapse = ", ")))
+    }
+  }
+  
+  # Optionally round counts to integers
+  if (round.counts) {
     eRNA.counts <- round(eRNA.counts)
   }
-  # Create a DESeq2 dataset using the design formula
-  dds <- DESeq2::DESeqDataSetFromMatrix(countData = eRNA.counts,
-                                        colData = meta_data,
-                                        design = design_formula)
-  # Filter out low-count enhancers
+  
+  # Build DESeq2 dataset
+  dds <- DESeq2::DESeqDataSetFromMatrix(
+    countData = eRNA.counts,
+    colData   = meta_data,
+    design    = design_formula
+  )
+  
+  # Filter low-count features
   dds <- dds[rowSums(DESeq2::counts(dds)) > min.countsum, ]
-  # Run the DESeq2 pipeline
+  
+  # Run DESeq2
   dds <- DESeq2::DESeq(dds)
+  
   # Extract results for the specified contrast
   res <- DESeq2::results(dds, contrast = contrast)
-  # Convert the results to a data frame and sort by adjusted p-value
+  
+  # Format and return
   results_df <- as.data.frame(res)
   results_df <- results_df[order(results_df$padj), ]
-  results_df <- data.frame(GHid = rownames(results_df), results_df, stringsAsFactors = FALSE, check.names = FALSE)
+  results_df <- data.frame(
+    GHid = rownames(results_df),
+    results_df,
+    stringsAsFactors = FALSE,
+    check.names = FALSE
+  )
   return(results_df)
 }
 

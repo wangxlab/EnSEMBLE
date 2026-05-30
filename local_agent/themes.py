@@ -216,26 +216,89 @@ def _collect_leading_edges(records: List[GSEARecord], max_genes: int) -> tuple[s
 def build_theme_summaries(
     records_by_direction: Dict[str, List[GSEARecord]],
     settings: AnalysisSettings,
+    output_dir: "Path | None" = None,
 ) -> Dict[str, List[ThemeSummary]]:
+    """Group GSEA records into themes via leading-edge Jaccard clustering.
+
+    This replaces the v6 regex/YAML taxonomy. The return shape is unchanged
+    (``Dict[direction, List[ThemeSummary]]``) so every downstream LLM stage
+    continues to work without modification.
+
+    Parameters
+    ----------
+    records_by_direction
+        Mapping "UP"/"DOWN" -> list of records that already passed the
+        pipeline's qcut (``AnalysisSettings.gsea_q_threshold``) in
+        ``prefilter.split_gsea_by_direction``.
+    settings
+        Clustering knobs live on ``AnalysisSettings`` (``cluster_deep_split``,
+        ``cluster_min_size``, ``cluster_min_similarity``,
+        ``cluster_include_orphans``, ``cluster_linkage``, ``cluster_pam_stage``).
+    output_dir
+        When provided, the clustering diagnostics (per-direction
+        ``cluster_themes_<dir>.json`` + ``cluster_themes_<dir>_network.png/.pdf``
+        + combined ``cluster_themes.json``) are written here. The returned
+        ``ThemeSummary`` objects are unchanged.
+    """
+    # Local imports to keep the legacy section of this file import-light.
+    from .cluster_themes import cluster_records  # noqa: WPS433
+    import json as _json  # noqa: WPS433
+    from pathlib import Path as _Path  # noqa: WPS433
+
     summaries: Dict[str, List[ThemeSummary]] = {"UP": [], "DOWN": []}
     max_genes = min(15, max(10, settings.theme_leading_edge_target))
+    combined_audit: Dict[str, dict] = {}
+
     for direction, records in records_by_direction.items():
         if not records:
             summaries[direction] = []
             continue
-        dir_cap = settings.theme_cap if settings.theme_cap > 0 else len(records)
-        condensed = []
-        for idx, theme in enumerate(group_by_theme(records, direction, settings), start=1):
-            top_terms = theme.top_terms(settings.theme_top_pathways)
-            if not top_terms:
+
+        # Auto-select (deepSplit, minClusterSize) from N using the two-bin
+        # lookup locked by the parameter grid sweep. Grid rationale:
+        # outputs/grid_sweep/ shows no single combo produces K in [8,18] for
+        # all 8 direction-units; this 2-bin rule hits 8/8.
+        if settings.cluster_auto_params:
+            if len(records) < settings.cluster_bin_cutpoint_n:
+                ds = settings.cluster_small_deep_split
+                mcs = settings.cluster_small_min_size
+            else:
+                ds = settings.cluster_large_deep_split
+                mcs = settings.cluster_large_min_size
+        else:
+            ds = settings.cluster_deep_split
+            mcs = settings.cluster_min_size
+
+        result = cluster_records(
+            records,
+            linkage_method=settings.cluster_linkage,
+            deep_split=ds,
+            min_cluster_size=mcs,
+            min_similarity=settings.cluster_min_similarity,
+            pam_stage=settings.cluster_pam_stage,
+        )
+
+        # Index records by term for fast lookup back to GSEARecord objects.
+        term_to_record = {rec.term: rec for rec in records}
+
+        dir_summaries: List[ThemeSummary] = []
+        for theme in result.themes:
+            # Sort member GSEARecords by intra-cluster score: higher |NES| first,
+            # then lower q-value. Keep top pathways for downstream LLM context.
+            member_recs = [term_to_record[m.term] for m in theme.members
+                           if m.term in term_to_record]
+            if not member_recs:
                 continue
-            effect = sum(term.nes for term in top_terms) / len(top_terms)
-            q_value = min(term.q_value for term in top_terms)
-            collections = [term.source for term in top_terms if term.source]
+            top_terms = sorted(
+                member_recs, key=lambda r: r.score, reverse=True
+            )[: settings.theme_top_pathways]
+            effect = sum(r.nes for r in top_terms) / len(top_terms)
+            q_value = min(r.q_value for r in top_terms)
+            collections = [r.source for r in top_terms if r.source]
             collection = collections[0] if collections else None
-            leading_edges = _collect_leading_edges(top_terms, max_genes)
-            theme_id = f"{direction.lower()}_{idx}_{_slugify(theme.label)}"
-            condensed.append(
+            leading_edges = _collect_leading_edges(member_recs, max_genes)
+            theme_id = f"{direction.lower()}_c{theme.cluster}_{_slugify(theme.label)}"
+            dir_summaries.append(
                 ThemeSummary(
                     theme_id=theme_id,
                     label=theme.label,
@@ -247,15 +310,132 @@ def build_theme_summaries(
                     leading_edges=leading_edges,
                 )
             )
-        summaries[direction] = condensed[:dir_cap] if dir_cap else condensed
+
+        # Optionally pass orphans through as singleton ThemeSummaries so the
+        # LLM still sees strong-but-unique signals. (Mirrors v6's fallback
+        # "Additional signal N: TERM_NAME" — but explicitly marked as orphan.)
+        if settings.cluster_include_orphans and result.orphans:
+            for orphan in result.orphans:
+                rec = term_to_record.get(orphan.term)
+                if rec is None:
+                    continue
+                clean = _clean_term_label(orphan.term)
+                leading_edges = _collect_leading_edges([rec], max_genes)
+                theme_id = (
+                    f"{direction.lower()}_orphan_{_slugify(clean)}"
+                )
+                dir_summaries.append(
+                    ThemeSummary(
+                        theme_id=theme_id,
+                        label=f"Orphan: {clean}",
+                        direction=direction,
+                        collection=rec.source,
+                        effect=rec.nes,
+                        q_value=rec.q_value,
+                        top_pathways=[rec],
+                        leading_edges=leading_edges,
+                    )
+                )
+
+        # Rank themes by |mean NES| desc, tiebreak by min q-value asc.
+        # Cluster id order (by size) is retained in the audit JSON, but the
+        # LLM budget is spent on the themes with the largest effect size.
+        dir_summaries.sort(key=lambda t: (-abs(t.effect), t.q_value))
+        dir_cap = settings.theme_cap if settings.theme_cap > 0 else len(dir_summaries)
+        summaries[direction] = dir_summaries[:dir_cap] if dir_cap else dir_summaries
+
+        # Emit audit artifacts per direction.
+        if output_dir is not None:
+            out = _Path(output_dir)
+            out.mkdir(parents=True, exist_ok=True)
+            audit = result.to_json_dict()
+            audit["direction"] = direction
+            audit["n_input_records"] = len(records)
+            combined_audit[direction] = audit
+            with (out / f"cluster_themes_{direction.lower()}.json").open("w") as fh:
+                _json.dump(audit, fh, indent=2)
+            if result.records:
+                try:
+                    from .plot_theme_network import plot_clustered_network  # noqa: WPS433
+                    import matplotlib.pyplot as _plt  # noqa: WPS433
+                    bin_tag = (
+                        "auto:binA" if settings.cluster_auto_params
+                        and len(records) < settings.cluster_bin_cutpoint_n
+                        else "auto:binB" if settings.cluster_auto_params
+                        else "manual"
+                    )
+                    plot_clustered_network(
+                        result,
+                        out_png=str(out / f"cluster_themes_{direction.lower()}_network.png"),
+                        out_pdf=str(out / f"cluster_themes_{direction.lower()}_network.pdf"),
+                        title=(
+                            f"{direction} themes - leading-edge Jaccard + "
+                            f"dynamicTreeCut (n={len(result.records)}, "
+                            f"deepSplit={ds}, minSize={mcs}, {bin_tag})"
+                        ),
+                    )
+                    _plt.close("all")
+                except Exception as exc:  # pragma: no cover - plotting is best-effort
+                    print(f"[WARN] cluster network plot failed for {direction}: {exc}")
+
+    # Honor the global theme_cap_total by trimming least-effective themes.
     total_cap = max(1, settings.theme_cap_total)
     while (len(summaries["UP"]) + len(summaries["DOWN"])) > total_cap:
         direction = "UP" if len(summaries["UP"]) >= len(summaries["DOWN"]) and summaries["UP"] else "DOWN"
         if not summaries[direction]:
             break
-        remove_idx = min(range(len(summaries[direction])), key=lambda i: abs(summaries[direction][i].effect))
+        remove_idx = min(
+            range(len(summaries[direction])),
+            key=lambda i: abs(summaries[direction][i].effect),
+        )
         summaries[direction].pop(remove_idx)
+
+    # Combined audit file for convenience.
+    if output_dir is not None and combined_audit:
+        out = _Path(output_dir)
+        payload = {
+            "params": next(iter(combined_audit.values())).get("params", {}),
+            "directions": combined_audit,
+            "final_themes_by_direction": {
+                d: [
+                    {
+                        "theme_id": t.theme_id,
+                        "label": t.label,
+                        "direction": t.direction,
+                        "effect": t.effect,
+                        "q_value": t.q_value,
+                        "n_top_pathways": len(t.top_pathways),
+                        "leading_edges": list(t.leading_edges),
+                    }
+                    for t in summaries[d]
+                ]
+                for d in ("UP", "DOWN")
+            },
+        }
+        with (out / "cluster_themes.json").open("w") as fh:
+            _json.dump(payload, fh, indent=2)
+
     return summaries
+
+
+def _clean_term_label(term: str, maxlen: int = 48) -> str:
+    cleaned = re.sub(
+        r"^(REACTOME_|GOBP_|GOCC_|GOMF_|HALLMARK_|KEGG_|WP_|PID_|BIOCARTA_)",
+        "",
+        term,
+    )
+    cleaned = cleaned.replace("_", " ").strip()
+    tokens = cleaned.split()
+    pretty: List[str] = []
+    for tok in tokens:
+        if tok.isupper() and len(tok) <= 4:
+            pretty.append(tok)
+        else:
+            pretty.append(tok.title())
+    label = " ".join(pretty)
+    if len(label) > maxlen:
+        label = label[: maxlen - 1].rstrip() + "\u2026"
+    return label
 
 
 # Internal helpers -----------------------------------------------------------------

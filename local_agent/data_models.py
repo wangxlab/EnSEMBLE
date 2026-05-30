@@ -1,5 +1,14 @@
-"""Typed records used across the pipeline."""
+"""Typed records used by the upstream clustering pipeline.
 
+These are the data structures consumed by ``prefilter.py`` and ``themes.py``
+(the locked clustering step). The agent's own input/output schemas (Pydantic
+models) live in ``schemas.py``.
+
+This module is intentionally minimal: only the classes needed by the
+clustering step are kept. The v1.x ``ClaimEvidence``, ``HelperClaim``,
+``EvidenceBundle``, and ``ESEARecord`` are obsolete in v2.0 (replaced by the
+single-call classifier's ``VerdictItem`` in ``schemas.py``).
+"""
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -19,15 +28,6 @@ class GSEARecord:
 
 
 @dataclass(frozen=True)
-class ESEARecord:
-    cell_type: str
-    effect_size: float
-    q_value: float
-    catalog: str | None
-    direction: str
-
-
-@dataclass(frozen=True)
 class HelperRecord:
     helper_name: str
     helper_class: str
@@ -41,6 +41,9 @@ class HelperRecord:
 
 @dataclass
 class Theme:
+    """Internal upstream Theme (a group of GSEA records). Distinct from
+    the agent's Pydantic Theme schema in schemas.py."""
+
     label: str
     direction: str
     terms: List[GSEARecord]
@@ -60,40 +63,3 @@ class ThemeSummary:
     top_pathways: List[GSEARecord]
     leading_edges: tuple[str, ...]
     helper_mean_effect: float | None = None
-
-
-@dataclass
-class HelperClaim:
-    theme_id: str
-    theme_label: str
-    helper_name: str | None
-    helper_class: str
-    direction: str
-    function_phrases: tuple[str, ...]
-    rationale: str
-    confidence: str
-    helper_top_hallmark: str | None = None
-    helper_effect: float | None = None
-    helper_q_value: float | None = None
-    claim_id: str | None = None
-
-
-@dataclass
-class EvidenceBundle:
-    claim: HelperClaim
-    evidence_snippets: tuple[str, ...]
-    alternative: str
-    gaps: str
-    predictions: tuple[str, ...]
-    raw_entry: dict | None = None
-
-
-@dataclass
-class ClaimEvidence:
-    claim: HelperClaim
-    evidence_snippets: tuple[str, ...]
-    alternative: str
-    gaps: str
-    predictions: tuple[str, ...]
-    verdict: str
-    verdict_reason: str

@@ -1,0 +1,41 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.pytest_cache/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Distribution / packaging
+build/
+dist/
+*.egg-info/
+
+# R
+.Rproj.user/
+.Rhistory
+.RData
+.Ruserdata
+
+# Editor / IDE
+.vscode/
+.idea/
+
+# Output artefacts (per-run; keep example data in inst/)
+outputs/
+*.log
+
+# Backup tarballs
+*_backup.tar.gz
+
+# Licensed reference data — not redistributable (obtain from GeneCards under license)
+inst/extdata/GeneHancer_v5.24.bed
+
+# Local secrets
+.anthropic_env
+.env
+*.api_key
+gemini_api_key.txt
