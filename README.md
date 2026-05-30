@@ -135,9 +135,9 @@ verdicts (SUPPORTED / PARTIAL / GENE_LEVEL_ONLY) plus a 2–3 page PDF
 report per dataset. v2.0 uses **Anthropic Claude (Sonnet/Opus 4.5)** as
 the backing LLM.
 
-If you were using the v1.x Gemini-backed agent, see [MIGRATION.md](MIGRATION.md)
-for the flag-mapping table. The v1.x CLI invocation continues to work via
-the back-compat shim, but Google Gemini is no longer supported.
+If you were using the v1.x Gemini-backed agent, the v1.x CLI invocation
+continues to work via the back-compat shim (`python -m local_agent.cli` with
+the legacy flags), but Google Gemini is no longer supported.
 
 ## 1. Prerequisites
 
