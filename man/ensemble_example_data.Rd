@@ -10,7 +10,7 @@ ensemble_example_data()
 Absolute path to the example data directory.
 }
 \description{
-Returns the absolute path to the packaged TNBC SNAI1 knockout demo data. Use
+Returns the absolute path to the packaged synthetic example data. Use
 this helper when programmatically constructing file paths for the example
 workflow or copying the assets to a writable directory prior to running a
 local analysis.

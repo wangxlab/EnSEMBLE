@@ -14,7 +14,7 @@ Created when it does not already exist. Defaults to a temporary directory.}
 Character vector with the copied file paths (invisibly).
 }
 \description{
-This helper copies the synthetic TNBC example files (counts, metadata,
+This helper copies the synthetic example files (counts, metadata,
 helper tables, and background form) into a writable directory so that users
 can run the preprocessing and agent workflows without touching the original
 files inside the installed package.

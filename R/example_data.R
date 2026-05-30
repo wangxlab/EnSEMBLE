@@ -1,6 +1,6 @@
 #' Locate bundled example data
 #'
-#' Returns the absolute path to the packaged TNBC SNAI1 knockout demo data. Use
+#' Returns the absolute path to the packaged synthetic example data. Use
 #' this helper when programmatically constructing file paths for the example
 #' workflow or copying the assets to a writable directory prior to running a
 #' local analysis.
@@ -13,7 +13,7 @@ ensemble_example_data <- function() {
 
 #' Copy the bundled example data to a destination directory
 #'
-#' This helper copies the synthetic TNBC example files (counts, metadata,
+#' This helper copies the synthetic example files (counts, metadata,
 #' helper tables, and background form) into a writable directory so that users
 #' can run the preprocessing and agent workflows without touching the original
 #' files inside the installed package.
