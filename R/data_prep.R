@@ -626,14 +626,24 @@ filter_geneHancer <- function(GeneHancer.file, GeneCode.file, extend.bp = 0, fil
       ranges = IRanges::IRanges(
         start = pmax(0, exon_locations$start - extend.bp),  # Ensure no negative coordinates
         end = exon_locations$end + extend.bp))
-    # Create GRanges objects for GeneHancer
+    # Create GRanges objects for GeneHancer. Accept either "chr1" or "1" in the
+    # chr column (real GeneHancer beds use "chr1"; some user files use "1").
+    gh_chr <- as.character(GeneHancer$chr)
+    gh_chr <- ifelse(grepl("^chr", gh_chr), gh_chr, paste0("chr", gh_chr))
     genehancer_gr <- GenomicRanges::GRanges(
-      seqnames = paste0("chr", GeneHancer$chr),
+      seqnames = gh_chr,
       ranges = IRanges::IRanges(start = GeneHancer$element_start, end = GeneHancer$element_end))
     # Find overlaps between GeneHancer and exon locations
     overlaps <- GenomicRanges::findOverlaps(genehancer_gr, exon_gr)
-    # Exclude GeneHancer entries that overlap with extended exon locations
-    genehancer_filtered <- GeneHancer[-unique(S4Vectors::queryHits(overlaps)), ]
+    # Exclude GeneHancer entries that overlap with extended exon locations.
+    # Note: data.table[-integer(0), ] returns an *empty* table, so guard
+    # explicitly when no overlaps are found.
+    drop_idx <- unique(S4Vectors::queryHits(overlaps))
+    if (length(drop_idx)) {
+      genehancer_filtered <- GeneHancer[-drop_idx, ]
+    } else {
+      genehancer_filtered <- GeneHancer
+    }
   } else {
     genehancer_filtered <- GeneHancer
   }

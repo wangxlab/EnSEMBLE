@@ -159,12 +159,15 @@ weight_enh <- DE.weights(DEE)
 # ------------------------------------------------------------------
 # Enhancer set filtering and ESEA
 # ------------------------------------------------------------------
-enhancer_sets <- read_concepts(enhancer_set_file)
+# Synthetic example sets are tiny (2-5 members). On real data, use
+# read_concepts(min = 10) and retain_specific_enhancers(minSize = 50) (the
+# package defaults).
+enhancer_sets <- read_concepts(enhancer_set_file, min = 2)
 
 
-enhancer_sets_filtered <- retain_specific_enhancers(enhancer_sets, maxMulti = 0.1, minSize = 50)
+enhancer_sets_filtered <- retain_specific_enhancers(enhancer_sets, maxMulti = 1.0, minSize = 2)
 
-ESEA_results <- ESEA_fast(weight_enh, compare.list = enhancer_sets_filtered)
+ESEA_results <- ESEA_fast(weight_enh, compare.list = enhancer_sets_filtered, minSize = 2)
 ESEA_results <- data.table::data.table(ESEA_results)
 if (nrow(ESEA_results)) {
   ESEA_results[, leadingEdge := vapply(
@@ -208,7 +211,7 @@ DGE <- ENSEMBLE.DEE(
 )
 weight_gene <- DE.weights(DGE)
 
-GSEA_results <- ESEA_fast(weight_gene, compare.list = gene_sets)
+GSEA_results <- ESEA_fast(weight_gene, compare.list = gene_sets, minSize = 2)
 GSEA_results <- data.table::data.table(GSEA_results)
 if (nrow(GSEA_results)) {
   GSEA_results[, leadingEdge := vapply(
