@@ -137,7 +137,7 @@ Leave keys untouched to keep using the packaged synthetic example data.
 # Python Evidence-Classifier Agent (`local_agent/`)
 
 `local_agent/` is a Python module that consumes the R-side outputs
-(GSEA results, ESEA helpers, background context) and produces structured
+(GSEA results, EPEA helpers, background context) and produces structured
 verdicts (SUPPORTED / PARTIAL / GENE_LEVEL_ONLY) plus a 2–3 page PDF
 report per dataset. v2.0 uses **Anthropic Claude (Sonnet/Opus 4.5)** as
 the backing LLM.
@@ -153,7 +153,7 @@ the legacy flags), but Google Gemini is no longer supported.
 - WeasyPrint system libraries: `libpango-1.0-0`, `libcairo2`,
   `libgdk-pixbuf-2.0-0`, `libffi-dev` (Debian/Ubuntu) or
   `brew install pango cairo gdk-pixbuf` (macOS)
-- R-side outputs already in place: `GSEA_results.csv`, `ESEA_helpers.csv`,
+- R-side outputs already in place: `GSEA_results.csv`, `EPEA_helpers.csv`,
   and a filled `background.txt` (use `background_form_template.txt` as a
   scaffold)
 
@@ -274,9 +274,10 @@ Writes `outputs/<dataset>/report_<dataset>.pdf` containing:
 
 1. Compression figure (significant pathways → themes → verdicts)
 2. Bipartite evidence network (SUPPORTED/PARTIAL above, GLO context below)
-3. ESEA helper overview (linked vs unlinked)
-4. Mini-thesis prose
-5. Full verdict appendix table
+3. EP
+4. EA helper overview (linked vs unlinked)
+5. Mini-thesis prose
+6. Full verdict appendix table
 
 ## 7. Reproducibility (optional)
 
