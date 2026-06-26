@@ -2,10 +2,10 @@
 
 ENSEMBLE provides enhancer-centric differential analysis and enrichment workflows.
 
-## Enhancer Set Enrichment Analysis (ESEA)
+## Enhancer Program Enrichment Analysis (EPEA)
 
 - To reproduce the bundled workflow, run `Rscript run_example.R [optional_output_dir]`. When no directory is supplied, results are written to `outputs/example_run` under the current working directory.
-- The script automates loading the package, filters enhancer sets via `retain_specific_enhancers()`, and saves the aligned metadata plus ESEA and GSEA tables inside the output directory.
+- The script automates loading the package, filters enhancer sets via `retain_specific_enhancers()`, and saves the aligned metadata plus EPEA and GSEA tables inside the output directory.
 - Ensure the file paths defined near the top of `run_example.R` point to your local copies of the bundled synthetic count matrices, metadata, and MSigDB collections before launching the script.
 
 ### Synthetic example data
@@ -22,7 +22,7 @@ list.files(dest)
 ```
 
 The folder contains synthetic enhancer and gene count matrices, metadata,
-helper/ESEA/GSEA tables, a synthetic GeneHancer-format annotations example,
+helper/EPEA/GSEA tables, a synthetic GeneHancer-format annotations example,
 GTF annotations, enhancer-set GMTs, and a filled background form. Point the
 file paths in `run_example.R` (or your own workflow) to these files to
 execute the entire pipeline end-to-end without downloading external resources.
